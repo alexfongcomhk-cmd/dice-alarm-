@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Smart micro:bit Alarm</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; }
+        .card { border: 1px solid #ccc; padding: 20px; margin-bottom: 20px; border-radius: 8px; }
+        button { padding: 10px; margin: 5px; cursor: pointer; background-color: #007BFF; color: white; border: none; border-radius: 4px;}
+        button.danger { background-color: #DC3545; }
+        input[type="time"] { padding: 8px; font-size: 16px; margin-right: 10px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <b>USB 連線狀態</b><br><br>
+        <span id="status" style="color:red; font-weight:bold;">Disconnected</span><br><br>
+        <button onclick="connectUSB()">Connect micro:bit</button>
+    </div>
+
+    <div class="card">
+        <b>鬧鐘控制 (Alarm Control)</b><br><br>
+        設定時間: <input type="time" id="alarmTime">
+        <button onclick="setAlarmTime()">設定鬧鐘 (Set Alarm)</button><br><br>
+        狀態: <span id="alarmStatus" style="font-weight:bold;">IDLE</span><br><br>
+        <button onclick="stopAlarm()" class="danger">Stop Alarm (手動停止)</button>
+    </div>
+
+    <div class="card">
+        <b>起床歷史紀錄 (Wake-up History)</b>
+        <ul id="historyList"></ul>
+    </div>
+
+    <script>
+        let port;
+        let writer;
+        let alarmStartTime;
+        let alarmTimeStr = "";
+        let checkInterval;
+        let isAlarmTriggered = false;
+
+        async function connectUSB() {
+            try {
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 115200 });
+                document.getElementById('status').innerText = "Connected";
+                document.getElementById('status').style.color = "green";
+                
+                const textEncoder = new TextEncoderStream();
+                textEncoder.readable.pipeTo(port.writable);
+                writer = textEncoder.writable.getWriter();
+                
+                readLoop();
+            } catch (e) {
+                alert("連線失敗，請確認支援 Web Serial：" + e);
+            }
+        }
+
+        async function readLoop() {
+            const textDecoder = new TextDecoderStream();
+            port.readable.pipeTo(textDecoder.writable);
+            const reader = textDecoder.readable.getReader();
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                
+                // 收到 Micro:bit 搖晃成功解鎖的回傳訊號
+                if (value.includes("STOP")) {
+                    let wakeTime = new Date();
+                    let duration = Math.round((wakeTime - alarmStartTime) / 1000);
+                    document.getElementById('alarmStatus').innerText = "IDLE (已起床)";
+                    addHistory(duration);
+                    isAlarmTriggered = false; // 重置狀態以便下次使用
+                }
+            }
+        }
+
+        function setAlarmTime() {
+            if (!writer) { 
+                alert("請先連接 micro:bit！"); 
+                return; 
+            }
+            
+            alarmTimeStr = document.getElementById('alarmTime').value;
+            if (!alarmTimeStr) {
+                alert("請選擇有效的時間！");
+                return;
+            }
+
+            document.getElementById('alarmStatus').innerText = `已設定於 ${alarmTimeStr} 響鈴 (Waiting...)`;
+            isAlarmTriggered = false;
+
+            // 清除之前的計時器並重新啟動每秒檢查
+            if (checkInterval) clearInterval(checkInterval);
+            checkInterval = setInterval(checkTimeLoop, 1000);
+        }
+
+        async function checkTimeLoop() {
+            if (isAlarmTriggered || !alarmTimeStr) return;
+
+            let now = new Date();
+            // 將當前時間格式化為 HH:MM 以便比對
+            let currentHours = String(now.getHours()).padStart(2, '0');
+            let currentMinutes = String(now.getMinutes()).padStart(2, '0');
+            let currentTimeStr = `${currentHours}:${currentMinutes}`;
+
+            // 當時間吻合時觸發鬧鐘
+            if (currentTimeStr === alarmTimeStr) {
+                isAlarmTriggered = true;
+                clearInterval(checkInterval); // 停止檢查直到下次重新設定
+                alarmStartTime = new Date();
+                
+                await writer.write("START\n");
+                document.getElementById('alarmStatus').innerText = "ALARM RINGING";
+            }
+        }
+
+        async function stopAlarm() {
+            if (writer) await writer.write("STOP\n");
+            document.getElementById('alarmStatus').innerText = "IDLE (手動停止)";
+            isAlarmTriggered = false;
+        }
+
+        function addHistory(seconds) {
+            let ul = document.getElementById('historyList');
+            let li = document.createElement('li');
+            li.innerText = `成功起床！解鎖花費時間: ${seconds} 秒`;
+            ul.appendChild(li);
+        }
+    </script>
+</body>
+</html>
